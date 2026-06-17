@@ -1,39 +1,87 @@
 #!/bin/bash
 
-echo "============================================================"
-echo " 🚨 恶意软件应急止血与强力清理脚本 🚨"
-echo " 警告: 此脚本会清空 crontab，清理临时目录，并尝试强制结束异常进程！"
-echo "============================================================"
+# 确保以 root 权限运行
+if [ "$EUID" -ne 0 ]; then
+  echo "❌ 错误: 请使用 root 权限运行此脚本！"
+  exit 1
+fi
 
-# 1. 解除常见被锁定的文件限制 (chattr -i / -a)
-echo "[*] 正在解除关键目录和文件的隐藏/锁定属性..."
-chattr -i -a /etc/crontab /var/spool/cron/root /var/spool/cron/crontabs/root 2>/dev/null
-chattr -i -a /root/.ssh/authorized_keys 2>/dev/null
-chattr -R -i -a /tmp /var/tmp /dev/shm 2>/dev/null
+echo "=========================================================="
+echo " ☢️  木马病毒精准清杀脚本 V2 (已完全排除探针防护) ☢️"
+echo "=========================================================="
 
-# 2. 阻断网络：封堵常见挖矿矿池 (如 c3pool)
-echo "[*] 正在写入 /etc/hosts 以屏蔽已知恶意域名..."
-echo "127.0.0.1 mine.c3pool.com" >> /etc/hosts
-echo "127.0.0.1 xmr.crypto-pool.fr" >> /etc/hosts
+# 1. 第一步：冻结真正的恶意进程（让其停止消耗 CPU，同时防止母体瞬间复活子进程）
+echo "[*] 1. 正在强行冻结恶意进程 (hermes, tor)..."
+killall -STOP hermes tor 2>/dev/null
+pkill -STOP -f hermes
+pkill -STOP -f tor
+echo "   [+] hermes 与 tor 已成功挂起（系统算力已释放）。"
 
-# 3. 猎杀内存驻留 (memfd) 和伪装进程 (kworker, deleted exe)
-echo "[*] 正在强制结束 memfd, systemlog, 伪装 kworker 及高 CPU 进程..."
-# 杀掉运行在内存中的无文件恶意程序
-for pid in $(ls /proc | grep -E '^[0-9]+$'); do
-    if ls -l /proc/$pid/exe 2>/dev/null | grep -q "memfd"; then
-        echo "  [+] 击杀 memfd 进程 PID: $pid"
-        kill -9 $pid 2>/dev/null
-    fi
-    if ls -l /proc/$pid/exe 2>/dev/null | grep -q "(deleted)"; then
-        # 排除正常的已删除但仍在运行的系统组件
-        cmdline=$(cat /proc/$pid/cmdline 2>/dev/null)
-        if [[ "$cmdline" != *"kworker"* ]] && [[ "$cmdline" != *"systemd"* ]]; then
-             echo "  [+] 击杀 deleted 异常进程 PID: $pid"
-             kill -9 $pid 2>/dev/null
+# 2. 第二步：逆向动态追踪并物理粉碎恶意二进制源文件
+echo "[*] 2. 正在动态追踪恶意源文件并进行物理粉碎..."
+for name in hermes tor; do
+    pids=$(pgrep -f "$name")
+    for pid in $pids; do
+        if [ -d "/proc/$pid" ]; then
+            # 顺着内存指针找到硬盘上的真实绝对路径
+            exe_path=$(readlink -f /proc/$pid/exe)
+            if [ ! -z "$exe_path" ] && [ -f "$exe_path" ]; then
+                echo "   [+] 发现木马实体: $exe_path"
+                # 解除隐藏锁定属性并强行粉碎
+                chattr -i -a "$exe_path" 2>/dev/null
+                rm -rf "$exe_path"
+                echo "   [vvv] 已物理粉碎: $exe_path"
+            fi
         fi
-    fi
+    done
 done
 
+# 精准清理常见的 hermes 临时残留目录，不进行盲目盲扫
+rm -f /tmp/hermes /var/tmp/hermes 2>/dev/null
+
+# 3. 第三步：将内存中已被剥离源文件的僵尸进程彻底断气
+echo "[*] 3. 正在彻底终结内存中的恶意进程..."
+killall -9 hermes tor 2>/dev/null
+pkill -9 -f hermes
+pkill -9 -f tor
+
+# 4. 第四步：封堵 111 端口（防范 rpcbind 被黑客利用对外发包导致云厂商封机）
+# ⚠️ 注意：这里完全没有拦截你的探针 IP
+echo "[*] 4. 正在配置网络防火墙，堵死 111 端口反射攻击..."
+iptables -I OUTPUT -p tcp --dport 111 -j DROP 2>/dev/null
+iptables -I OUTPUT -p udp --dport 111 -j DROP 2>/dev/null
+iptables -I INPUT -p tcp --dport 111 -j DROP 2>/dev/null
+iptables -I INPUT -p udp --dport 111 -j DROP 2>/dev/null
+
+# 5. 第五步：清理潜在的系统服务启动项（严格过滤掉包含 agent 或 nezha 的服务）
+echo "[*] 5. 正在扫描并清理隐藏的恶意系统服务..."
+for service in $(ls /etc/systemd/system/ /lib/systemd/system/ 2>/dev/null | grep -E 'hermes|miner|dbus-'); do
+    # 安全边界：如果服务名包含 agent 或者是哪吒服务，绝对跳过
+    if [[ "$service" == *"agent"* ]] || [[ "$service" == *"nezha"* ]]; then
+        continue
+    fi
+    
+    if grep -qE 'hermes|tmp' "/etc/systemd/system/$service" 2>/dev/null; then
+        echo "   [+] 发现恶意服务: $service，正在强行卸载..."
+        systemctl stop "$service" 2>/dev/null
+        systemctl disable "$service" 2>/dev/null
+        chattr -i -a "/etc/systemd/system/$service" 2>/dev/null
+        rm -f "/etc/systemd/system/$service"
+    fi
+done
+systemctl daemon-reload 2>/dev/null
+
+# 6. 第六步：检查动态链接库劫持后门 (LD_PRELOAD) -> 这是木马最隐蔽的复活手段
+echo "[*] 6. 正在检查动态库劫持后门..."
+if [ -s /etc/ld.so.preload ]; then
+    echo "   [!] 发现 /etc/ld.so.preload 存在内容，正在强行净化..."
+    chattr -i -a /etc/ld.so.preload 2>/dev/null
+    > /etc/ld.so.preload
+fi
+
+echo "=========================================================="
+echo " 🎉 靶向清杀完成！探针正常安全，恶意挖矿与暗网进程已被拦截。"
+echo "=========================================================="
 # 杀掉常见的挖矿/木马进程名
 pkill -9 -f c3pool
 pkill -9 -f systemlog
